@@ -5,7 +5,7 @@ platform of the unofficial custom firmware by **Dawid SQ6EMM**.
 
 | App | What it does | Status |
 |---|---|---|
-| [FREQCAL](apps/freqcal/) | Measures the reference oscillator error on a standard-frequency station (WWV/BPM, RWM, CHU or a GPSDO's 10 MHz) and tells you which way, and roughly how much, to change REF Adjust | Tested on IC-705 E, firmware 20261119v14 |
+| [FREQCAL](apps/freqcal/) | Measures the reference oscillator error on a standard-frequency station (WWV/BPM, RWM, CHU or a GPSDO's 10 MHz) and tells you which way, and roughly how much, to change REF Adjust | v1.1, tested on IC-705 E, firmware 20261119v14. [How to use](apps/freqcal/README.md), [changes](apps/freqcal/CHANGELOG.md) |
 
 ## Requirements
 - The custom firmware by SQ6EMM with ICAP support, and the matching SD-card app bundle:

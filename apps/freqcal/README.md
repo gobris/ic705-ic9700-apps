@@ -101,5 +101,8 @@ radio LOW -> INCREASE REF ~0.2 %            advice in REF Adjust menu %
 offset, error in Hz and ppm, S/N, phase RMS, second-carrier separation and tone, amplitude
 variation, accepted (1/0).
 
+## Changes
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## Build
 See the [main README](../../README.md#build-from-source). Built with the public ICAP SDK only.
