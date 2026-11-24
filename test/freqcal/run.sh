@@ -25,7 +25,14 @@ echo "== 5. RWM 9996 kHz picked from the dial (expect ref 9.996000 MHz RWM)"
 echo "== 6. Unrelated dial 7.1 MHz (expect a tuning hint)"
 ./harness x 3000 1e9 3000 0 7100000 7100000 | grep -E " L2 " | head -1
 
-echo "== 7. Step calibration, REF changed 40 s after the popup (expect step=+0.25000)"
+echo "== 7. RWM 10 Hz pulses, 20 ms (expect +0.0200 ppm: the carrier line is measured)"
+./harness x 3000 1e9 130000 0 9994500 9996000 0 2 | grep -E " L5 " | tail -1
+
+echo "== 8. RWM 1 Hz pulses and CW ID (expect: carrier keyed, waiting - no result)"
+./harness x 3000 1e9 30000 0 9994500 9996000 0 1 | grep -E " L2 .*keyed" | tail -1
+./harness x 3000 1e9 30000 0 9994500 9996000 0 4 | grep -E " L2 .*keyed" | tail -1
+
+echo "== 9. Step calibration, REF changed 40 s after the popup (expect step=+0.25000)"
 ./harness cal 3000 40000 300000 | grep -E "POPUP" | head -1
 grep -E "^CAL|^step=" FREQCAL.TXT
 

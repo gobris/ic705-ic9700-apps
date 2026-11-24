@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * Host test harness for FREQCAL: fake ICAP services, synthetic carrier + noise (+ optional 2nd carrier).
- * Usage: ./harness MODE NOISE TURN_DELAY_MS STOP_MS AMP2 DIAL_HZ REF_HZ OFF2_HZ
+ * Usage: ./harness MODE NOISE TURN_DELAY_MS STOP_MS AMP2 DIAL_HZ REF_HZ OFF2_HZ KEY
+ *   KEY: 0 steady, 1 = 1 Hz pulses 100 ms, 2 = 10 Hz pulses 20 ms, 3 = 10 Hz pulses 50 ms, 4 = CW-like
  *   MODE "cal" runs the step calibration, anything else a normal measurement. See run.sh.
  */
 /* host test harness for freqcal.c: fake ICAP services, synthetic carrier + noise */
@@ -15,6 +16,7 @@
 #undef memset
 #undef memcpy
 
+static int keymode = 0;
 static double sim_ms = 0, gen_samples = 0, phase = 0, phase2 = 0, amp2 = 0, off2 = 0.93;
 static double e_ppm = 0.02, step_ppm = 0.25; static int cal_applied = 0; static double popup_ms = -1;
 static double dial = 9998500.0, refhz = 10000000.0, snr_amp = 3000, noise = 3000;
@@ -49,7 +51,12 @@ static int s_aread(int16_t *b, int n){
   double avail = sim_ms*8 - gen_samples; if (avail < 1) return 0; if (n > avail) n = (int)avail;
   if (popup_ms >= 0 && !cal_applied && sim_ms - popup_ms > turn_delay) { e_ppm += 1.0*step_ppm; cal_applied = 1; printf("   >>> sim: REF +5 applied, e=%.4f ppm\n", e_ppm); }
   double tone = refhz - dial*(1+e_ppm*1e-6);
-  for(int i=0;i<n;i++){ phase += 2*M_PI*tone/8000; phase2 += 2*M_PI*(tone+off2)/8000; double v = snr_amp*sin(phase) + amp2*snr_amp*sin(phase2) + noise*gauss(); if(v>32767)v=32767; if(v<-32768)v=-32768; b[i]=(int16_t)v; }
+  for(int i=0;i<n;i++){ phase += 2*M_PI*tone/8000; phase2 += 2*M_PI*(tone+off2)/8000; double tt = (gen_samples + i) / 8000.0, fr = tt - floor(tt), g = 1;
+    if (keymode == 1) g = fr < 0.1;                                   /* 1 Hz pulses, 100 ms */
+    else if (keymode == 2) g = (tt*10 - floor(tt*10)) < 0.2;          /* 10 Hz pulses, 20 ms */
+    else if (keymode == 3) g = (tt*10 - floor(tt*10)) < 0.5;          /* 10 Hz pulses, 50 ms */
+    else if (keymode == 4) { int k = (int)(tt * 8); g = ((k * 2654435761u) >> 29) & 1; }  /* CW-like on/off */
+    double v = g*snr_amp*sin(phase) + amp2*snr_amp*sin(phase2) + noise*gauss(); if(v>32767)v=32767; if(v<-32768)v=-32768; b[i]=(int16_t)v; }
   gen_samples += n; return n; }
 static int s_arate(void){ return 8000; }
 static void s_dec(const char *s){ (void)s; }
@@ -64,6 +71,7 @@ int main(int argc, char **argv){
   if (argc > 6) dial = atof(argv[6]);
   if (argc > 7) refhz = atof(argv[7]);
   if (argc > 8) off2 = atof(argv[8]);
+  if (argc > 9) keymode = atoi(argv[9]);
   static struct icap_svc svc;
   svc.abi_version=3; svc.radio_id=0x705; svc.size=sizeof svc;
   svc.print=s_print; svc.set_line=s_set_line; svc.clear=s_clear; svc.f_open=s_open; svc.f_read=s_read; svc.f_write=s_write; svc.f_close=s_close;

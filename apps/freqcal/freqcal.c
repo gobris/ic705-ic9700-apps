@@ -145,6 +145,7 @@ static struct {
     double min_snr;     /* dB (bin S/N) needed to accept a window                    */
     double max_rms;     /* max phase-fit residual (rad); 99 = not used               */
     double min_sep;     /* dB the strongest carrier must exceed a 2nd one             */
+    double max_cv;      /* max amplitude variation (std/mean) of a steady carrier     */
     int    log;         /* write FREQCAL.TXT                                         */
 } cfg;
 
@@ -152,7 +153,7 @@ static void cfg_defaults(void)
 {
     cfg.ref_hz = 10000000.0; cfg.ref_auto = 1; cfg.search_hz = 0; cfg.search_ppm = 1.5; cfg.reacq = 3; cfg.win_s = 20;
     cfg.step_ppm = 0.10; cfg.has_step = 1;   /* IC-705: about 0.1 ppm per 1 % REF Adjust (measured) */
-    cfg.ref_now = -1; cfg.cal = 0; cfg.min_snr = 15; cfg.max_rms = 99; cfg.min_sep = 6; cfg.log = 1;
+    cfg.ref_now = -1; cfg.cal = 0; cfg.min_snr = 15; cfg.max_rms = 99; cfg.min_sep = 6; cfg.max_cv = 0.6; cfg.log = 1;
 }
 
 static char cfgbuf[2048];
@@ -188,6 +189,7 @@ static void cfg_load(void)
                 else if (str_eq(k, "minsnr")) cfg.min_snr = v;
                 else if (str_eq(k, "maxrms")) cfg.max_rms = v;
                 else if (str_eq(k, "minsep")) cfg.min_sep = v;
+                else if (str_eq(k, "maxcv")) cfg.max_cv = v;
                 else if (str_eq(k, "log")) cfg.log = v != 0;
             }
         }
@@ -289,7 +291,7 @@ static struct {
     double a2r, a2i; int n2;
     /* phase-slope fit */
     int    nfit; double ph_prev, unwrap; double st_, sp, stt, stp, spp;
-    double amp_sum;
+    double amp_sum, amp_sq;
     double blk_d; int blk_k;   /* 5 s block of phase steps */
     int    need;           /* fit points per window                   */
     uint32_t t_start;
@@ -341,12 +343,38 @@ static void acquire(void)
     }
     double noise = nb ? sum / nb : 1e-30;
     m.snr_db = 10 * flog10(best / (noise > 1e-30 ? noise : 1e-30));
+    /* pulsed carriers (RWM 10 Hz pulses) have sidebands almost as strong as the carrier:
+       among local peaks within 3 dB of the strongest, take the one closest to the expected tone */
+    for (int k = -steps + 1; k < steps; k++) {
+        double p = pw[k + steps], f = k * 0.05;
+        if (p >= 0.5 * best && p >= pw[k + steps - 1] && p >= pw[k + steps + 1] && fabsd(f) < fabsd(fbest)) fbest = f;
+    }
     m.fc = fbest;
+}
+
+
+/* amplitude variation (std/mean) of the 4 s search block at the found offset, in 0.1 s steps */
+static double acq_cv(void)
+{
+    double s, c; fsincos(-TWOPI * m.fc / FS1, &s, &c);
+    double pr = 1, pi = 0, sum = 0, sq = 0; int n = 0;
+    for (int i = 0; i + D2 <= ACQ_N; i += D2) {
+        double xr = 0, xi = 0;
+        for (int j = i; j < i + D2; j++) {
+            xr += acq_re[j] * pr - acq_im[j] * pi; xi += acq_re[j] * pi + acq_im[j] * pr;
+            double t = pr * c - pi * s; pi = pr * s + pi * c; pr = t;
+        }
+        double a = fsqrt(xr * xr + xi * xi);
+        sum += a; sq += a * a; n++;
+    }
+    if (!n || sum <= 0) return 0;
+    double mu = sum / n, var = sq / n - mu * mu;
+    return var > 0 ? fsqrt(var) / mu : 0;
 }
 
 static void fit_reset(void)
 {
-    m.nfit = 0; m.unwrap = 0; m.st_ = m.sp = m.stt = m.stp = m.spp = 0; m.amp_sum = 0;
+    m.nfit = 0; m.unwrap = 0; m.st_ = m.sp = m.stt = m.stp = m.spp = 0; m.amp_sum = 0; m.amp_sq = 0;
     m.blk_d = 0; m.blk_k = 0;
     m.t_start = icap_ticks();
 }
@@ -388,7 +416,7 @@ static int cal_block(double tone)
 }
 
 /* result of one window */
-struct res { double tone, df, rms, amp, sep_db, df2; int ok, two; };
+struct res { double tone, df, rms, amp, sep_db, df2, cv; int ok, two; };
 
 #define ZB_MAX 1200                 /* 120 s at 10 Hz */
 static float zb_re[ZB_MAX], zb_im[ZB_MAX];
@@ -444,7 +472,7 @@ static int fine_point(double zr, double zi, struct res *out)
     }
     double t = (double)m.nfit / FS2;
     m.st_ += t; m.sp += m.unwrap; m.stt += t * t; m.stp += t * m.unwrap; m.spp += m.unwrap * m.unwrap;
-    m.amp_sum += fsqrt(zr * zr + zi * zi);
+    m.amp_sum += fsqrt(zr * zr + zi * zi); m.amp_sq += zr * zr + zi * zi;
     if (m.nfit < ZB_MAX) { zb_re[m.nfit] = (float)zr; zb_im[m.nfit] = (float)zi; }
     m.nfit++;
     if (m.nfit < m.need) return 0;
@@ -459,6 +487,10 @@ static int fine_point(double zr, double zi, struct res *out)
     out->tone = m.tone0 + m.fc + out->df;
     out->rms = fsqrt(sse / n);
     out->amp = m.amp_sum / n;
+    {   /* amplitude variation: pulses (RWM 1 Hz), CW ID or a switched-off carrier give a large value */
+        double mu = out->amp, var = m.amp_sq / n - mu * mu;
+        out->cv = mu > 0 && var > 0 ? fsqrt(var) / mu : 0;
+    }
     out->ok = 1;
     return 1;
 }
@@ -672,7 +704,7 @@ int app_main(const struct icap_svc *svc)
 
     char *p;
     show_title();
-    log_line("# time dial_hz sb trv tone_hz df_hz err_hz err_ppm snr_db rms_rad sep2_db tone2_hz ok");
+    log_line("# time dial_hz sb trv tone_hz df_hz err_hz err_ppm snr_db rms_rad sep2_db tone2_hz ampvar ok");
 
     struct dial d = { 0 }, dn;
     struct res r;
@@ -714,7 +746,8 @@ int app_main(const struct icap_svc *svc)
             for (int i = 0; i < n; i++) {
                 if (dsp_sample(abuf[i], &r)) {
                     double e = err_ppm(&d, r.tone);
-                    int good = m.snr_db >= cfg.min_snr && r.rms < cfg.max_rms && !r.two;
+                    int keyed = r.cv > cfg.max_cv;
+                    int good = m.snr_db >= cfg.min_snr && r.rms < cfg.max_rms && !r.two && !keyed;
                     char b[160];
                     /* log */
                     p = b; stamp(p); while (*p) p++;
@@ -728,6 +761,7 @@ int app_main(const struct icap_svc *svc)
                     *p++ = ' '; p = put_f(p, r.rms, 3, 0);
                     *p++ = ' '; p = put_f(p, r.sep_db > 98 ? 99 : r.sep_db, 1, 0);
                     *p++ = ' '; p = put_f(p, m.tone0 + m.fc + r.df2, 3, 0);
+                    *p++ = ' '; p = put_f(p, r.cv, 2, 0);
                     p = put_s(p, good ? " 1" : " 0");
                     log_line(b);
                     /* screen */
@@ -737,6 +771,7 @@ int app_main(const struct icap_svc *svc)
                     p = put_f(p, m.snr_db, 0, 0); p = put_s(p, " dB");
                     if (!good) {
                         if (m.snr_db < cfg.min_snr) put_s(p, " (low S/N)");
+                        else if (keyed) { p = put_s(p, " (keyed/CW "); p = put_f(p, r.cv, 1, 0); put_s(p, ")"); }
                         else if (r.two) { p = put_s(p, " (2 carriers "); p = put_f(p, r.sep_db, 0, 0); put_s(p, " dB)"); }
                         else { p = put_s(p, " (rms "); p = put_f(p, r.rms, 2, 0); put_s(p, ")"); }
                     }
@@ -763,7 +798,11 @@ int app_main(const struct icap_svc *svc)
         if (m.st == ST_ACQ && m.nacq >= ACQ_N) {
             put_s(L[2], "searching carrier..."); line(2);
             acquire();
-            if (m.snr_db < cfg.min_snr) {
+            double cv = acq_cv();
+            if (m.snr_db >= 6 && cv > cfg.max_cv) {
+                p = put_s(L[2], "carrier keyed (pulses/CW), waiting"); line(2);
+                dsp_reset(m.tone0);
+            } else if (m.snr_db < cfg.min_snr) {
                 p = put_s(L[2], "no clear carrier (S/N "); p = put_f(p, m.snr_db, 0, 0); put_s(p, " dB)");
                 line(2);
                 dsp_reset(m.tone0);
