@@ -1,0 +1,7 @@
+# build output (release binaries are attached to GitHub Releases)
+*.o
+*.elf
+*.APP
+# test output
+test/**/harness
+test/**/FREQCAL.TXT
